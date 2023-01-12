@@ -4,6 +4,11 @@ import sqlalchemy
 
 from fastapi import FastAPI
 from decouple import config
+from pydantic import BaseModel, validator
+from email_validator import validate_email as validate_e
+from email_validator import EmailNotValidError
+from typing import Optional
+from datetime import datetime
 
 
 DATABASE_URL = f"postgresql://{config('DB_USER')}:{config('DB_PASSWORD')}@localhost:5432/clothes"
@@ -65,6 +70,51 @@ clothes = sqlalchemy.Table(
 )
 
 
+class EmailField(str):
+    @classmethod
+    def __get_validators__(cls):
+        yield cls.validate
+
+    @classmethod
+    def validate(cls, v) -> str:
+        try:
+            validate_e(v)
+            return v
+        except EmailNotValidError:
+            raise ValueError("Email is not valid")
+
+
+class BaseUser(BaseModel):
+    email: EmailField
+    full_name: Optional[str]
+
+    # @validator("email")
+    # def validate_email(cls, v):
+    #     try:
+    #         validate_e(v)
+    #         return v
+    #     except EmailNotValidError:
+    #         raise ValueError("Email is not valid")
+
+    @validator("full_name")
+    def validate_full_name(cls, v):
+        try:
+            first_name, last_name = v.split()
+            return v
+        except Exception:
+            raise ValueError("You should provide at least two names")
+
+
+class UserSighIn(BaseUser):
+    password: str
+
+
+class UserSighOut(BaseUser):
+    phone: Optional[str]
+    created_at: datetime
+    last_modified_at: datetime
+
+
 app = FastAPI()
 
 
@@ -76,3 +126,11 @@ async def startup():
 @app.on_event("shutdown")
 async def shutdown():
     await database.disconnect()
+
+
+@app.post("/register/", response_model=UserSighOut)
+async def create_user(user: UserSighIn):
+    q = users.insert().values(**user.dict())
+    id_ = await database.execute(q)
+    created_user = await database.fetch_one(users.select().where(users.c.id==id_))
+    return created_user
