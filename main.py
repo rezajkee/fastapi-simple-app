@@ -20,6 +20,13 @@ database = databases.Database(DATABASE_URL)
 
 metadata = sqlalchemy.MetaData()
 
+
+class UserRole(enum.Enum):
+    super_admin = "super admin"
+    admin = "admin"
+    user = "user"
+
+
 users = sqlalchemy.Table(
     "users",
     metadata,
@@ -40,6 +47,12 @@ users = sqlalchemy.Table(
         nullable=False,
         server_default=sqlalchemy.func.now(),
         onupdate=sqlalchemy.func.now(),
+    ),
+    sqlalchemy.Column(
+        "role",
+        sqlalchemy.Enum(UserRole),
+        nullable=False,
+        server_default=UserRole.user.name,
     ),
 )
 
@@ -156,6 +169,12 @@ class CustomHTTPBearer(HTTPBearer):
 oauth2_scheme = CustomHTTPBearer()
 
 
+def is_admin(request: Request):
+    user = request.state.user
+    if not user or user["role"] not in (UserRole.super_admin, UserRole.admin):
+        raise HTTPException(403, "You don't have permissions for this resource")
+
+
 def create_access_token(user):
     try:
         payload = {
@@ -182,7 +201,34 @@ async def get_all_clothes():
     return await database.fetch_all(clothes.select())
 
 
-@app.post("/register/")
+class ClothesBase(BaseModel):
+    name: str
+    color: ColorEnum
+    size: SizeEnum
+
+
+class ClothesIn(ClothesBase):
+    pass
+
+
+class ClothesOut(ClothesBase):
+    id: int
+    created_at: datetime
+    last_modified_at: datetime
+
+
+@app.post(
+    "/clothes/",
+    response_model=ClothesOut,
+    dependencies=[Depends(oauth2_scheme), Depends(is_admin)],
+    status_code=201,
+)
+async def create_clothes(clothes_data: ClothesIn):
+    id_ = await database.execute(clothes.insert().values(**clothes_data.dict()))
+    return await database.fetch_one(clothes.select().where(clothes.c.id == id_))
+
+
+@app.post("/register/", status_code=201)
 async def create_user(user: UserSighIn):
     user.password = pwd_context.hash(user.password)
     q = users.insert().values(**user.dict())
